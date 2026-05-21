@@ -62,10 +62,18 @@ input,select,button{font-family:inherit}
 .ind-grid{display:grid;background:#fff;min-width:1200px}
 
 /* Column headers */
-.col-hdr{background:#0d1b2a;color:#fff;padding:8px 10px;font-size:11px;font-weight:600;text-align:center;border-right:1px solid rgba(255,255,255,.08);user-select:none;line-height:1.4}
+.col-hdr{background:#0d1b2a;color:#fff;padding:8px 10px;font-size:11px;font-weight:600;text-align:center;border-right:1px solid rgba(255,255,255,.08);user-select:none;line-height:1.4;position:relative}
 .col-hdr:first-child{text-align:left;background:#111d2e;border-radius:10px 0 0 0}
 .col-hdr:last-child{border-radius:0 10px 0 0;border-right:none}
 .col-hdr .sub{font-size:9px;font-weight:400;color:rgba(255,255,255,.5);margin-top:2px;display:block}
+/* Tooltip trigger */
+.col-tip{display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border-radius:50%;background:rgba(255,255,255,.18);color:rgba(255,255,255,.7);font-size:8px;font-weight:700;cursor:help;position:absolute;top:6px;right:7px;line-height:1;vertical-align:middle}
+.col-tip:hover{background:rgba(255,255,255,.35);color:#fff}
+/* Tooltip popup */
+.col-tip .tip-box{display:none;position:absolute;top:18px;right:0;width:220px;background:#1e2d3d;color:rgba(255,255,255,.9);font-size:10px;font-weight:400;line-height:1.55;padding:8px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.12);z-index:500;text-align:left;box-shadow:0 4px 16px rgba(0,0,0,.4);white-space:normal;pointer-events:none}
+.col-tip:hover .tip-box{display:block}
+/* Keep tooltip inside viewport for leftmost cols */
+.col-tip .tip-box.tip-left{right:auto;left:0}
 
 /* Sub-header row (indicator names) */
 .col-sub{background:#1a2940;color:rgba(255,255,255,.7);padding:5px 10px;font-size:9px;font-weight:500;text-align:center;border-right:1px solid rgba(255,255,255,.06);letter-spacing:.3px;text-transform:uppercase}
@@ -79,7 +87,7 @@ input,select,button{font-family:inherit}
 .ind-row:hover .ind-cell{background:#fafcff!important;filter:brightness(.97)}
 
 /* Watchlist cell */
-.cell-watch{min-width:155px;cursor:pointer;background:#fff}
+.cell-watch{min-width:120px;cursor:pointer;background:#fff}
 .cell-watch:hover{background:#f5f7ff!important}
 .w-ticker{font-size:13px;font-weight:700;color:#111;margin-bottom:1px;display:flex;align-items:center;gap:4px}
 .w-price{font-size:14px;font-weight:500;color:#111}
@@ -185,7 +193,16 @@ input,select,button{font-family:inherit}
     <div class="prog-wrap"><div class="prog-bar" id="mpbar" style="width:0%"></div></div>
     <div class="prog-lbl" id="mplbl">Fetching…</div>
   </div>
-  <div class="sbar"><span class="ndot" id="msdot"></span><span id="mstxt">Connecting…</span><span id="mbatch" style="margin-left:4px;color:#aaa"></span></div>
+  <div class="sbar">
+    <span class="ndot" id="msdot"></span>
+    <span id="mstxt">Connecting…</span>
+    <span id="mbatch" style="margin-left:4px;color:#aaa"></span>
+    <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
+      <span id="pg-key-status-ind" style="font-size:11px"></span>
+      <button class="btn btn-sm" onclick="clearCacheRun()" style="font-size:10px">↺ Force refetch all</button>
+    </span>
+  </div>
+  <div id="fetch-status" style="font-size:11px;color:#888;margin-bottom:.75rem;display:flex;flex-wrap:wrap;gap:4px"></div>
 
   <div class="legend">
     <span class="leg-item"><span class="leg-dot" style="background:#00c853"></span>Bright green</span>
@@ -312,7 +329,11 @@ input,select,button{font-family:inherit}
     <div class="card-title">API keys</div>
     <div style="margin-bottom:.75rem"><label style="font-size:11px;color:#666;display:block;margin-bottom:3px">Finnhub (live quotes)</label><input type="text" id="cfg-fh" style="width:100%;font-family:monospace;font-size:11px;padding:7px 9px;border:1px solid #ccc;border-radius:6px"></div>
     <div style="margin-bottom:.85rem"><label style="font-size:11px;color:#666;display:block;margin-bottom:3px">Polygon.io (historical OHLC)</label><input type="text" id="cfg-pg" style="width:100%;font-family:monospace;font-size:11px;padding:7px 9px;border:1px solid #ccc;border-radius:6px"></div>
-    <button class="btn btn-p" onclick="saveSettings()">Save &amp; restart</button>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-p" onclick="saveSettings()">Save &amp; restart</button>
+      <button class="btn" onclick="testPolygonKey()">🔑 Test Polygon key</button>
+      <span id="pg-key-status" style="font-size:12px;color:#666"></span>
+    </div>
   </div>
   <div class="card" style="max-width:620px">
     <div class="card-title">Indicator thresholds</div>
@@ -516,15 +537,75 @@ async function refreshLiveQuotes(){
   let ok=0,fail=0;
   res.forEach(r=>{ if(r.status==='fulfilled'&&r.value?.d){liveQ[r.value.t]=r.value.d;ok++;}else fail++; });
   setNavS(ok>0?'ok':'err',`${ok} live · ${fail} unavailable`);
+  // Re-render grid immediately so prices appear
+  renderGrid();
+  volRenderGrid();
 }
 
 // ═══════════════════════════════════════════════════════
 // POLYGON + INDICATOR CALCULATION (via technicalindicators CDN)
 // ═══════════════════════════════════════════════════════
+async function fetchWithCorsProxy(url){
+  // Try allorigins first (most reliable, no country blocks)
+  try{
+    const r=await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
+    if(r.ok){ const t=await r.text(); return JSON.parse(t); }
+  }catch(e){}
+  // Fallback 1: corsproxy.io
+  try{
+    const r=await fetch(`https://corsproxy.io/?url=${encodeURIComponent(url)}`);
+    if(r.ok){ const t=await r.text(); return JSON.parse(t); }
+  }catch(e){}
+  // Fallback 2: direct (works if Polygon adds CORS headers in future)
+  try{
+    const r=await fetch(url);
+    if(r.ok) return await r.json();
+  }catch(e){}
+  return null;
+}
+
 async function fetchPGOHLC(sym){
-  const to=new Date(), from=new Date(); from.setDate(from.getDate()-400);
-  const url=`https://api.polygon.io/v2/aggs/ticker/${encodeURIComponent(sym)}/range/1/day/${from.toISOString().slice(0,10)}/${to.toISOString().slice(0,10)}?adjusted=true&sort=asc&limit=400&apiKey=${CFG.pgKey}`;
-  try{ const r=await fetch(url); if(!r.ok)return null; const d=await r.json(); return d.results?.length>=30?d.results:null; }catch(e){return null;}
+  const to=new Date(); to.setDate(to.getDate()-2); // end 2 days ago — free tier historical only
+  const from=new Date(); from.setDate(from.getDate()-402);
+  const toStr=to.toISOString().slice(0,10);
+  const fromStr=from.toISOString().slice(0,10);
+  const polygonUrl=`https://api.polygon.io/v2/aggs/ticker/${encodeURIComponent(sym)}/range/1/day/${fromStr}/${toStr}?adjusted=true&sort=asc&limit=400&apiKey=${CFG.pgKey}`;
+  try{
+    const d=await fetchWithCorsProxy(polygonUrl);
+    if(!d){ return null; }
+    // Log raw response for first ticker to aid debugging
+    if(sym==='AAPL'&&window._pgDebug!==true){
+      window._pgDebug=true;
+      console.log('Polygon raw response for AAPL:',JSON.stringify(d).slice(0,400));
+      const dbgEl=document.getElementById('pg-key-status-ind');
+      if(dbgEl&&!d.results) dbgEl.innerHTML=`<span style="color:#e65100">⚠ Polygon: status="${d.status}" resultsCount=${d.resultsCount||0} — ${d.error||d.message||'check console'}</span>`;
+    }
+    if(d.status==='ERROR'||d.error){ setIndS('err',`Polygon: ${d.error||d.status}`); return null; }
+    if(!d.results||d.results.length<30){ return null; }
+    return d.results;
+  }catch(e){
+    setIndS('err',`Fetch error for ${sym}: ${e.message}`);
+    return null;
+  }
+}
+
+async function testPolygonKey(){
+  const el=document.getElementById('pg-key-status');
+  const el2=document.getElementById('pg-key-status-ind');
+  const setText=(html)=>{ if(el)el.innerHTML=html; if(el2)el2.innerHTML=html; };
+  setText('Testing…');
+  const polygonUrl=`https://api.polygon.io/v2/aggs/ticker/AAPL/range/1/day/2023-01-01/2023-06-01?adjusted=true&sort=asc&limit=5&apiKey=${CFG.pgKey}`;
+  try{
+    const d=await fetchWithCorsProxy(polygonUrl);
+    if(!d){ setText('<span style="color:#c62828">❌ All proxies failed — check network connection</span>'); return false; }
+    if(d.status==='ERROR'||d.error){ setText(`<span style="color:#c62828">❌ Polygon error: ${d.error||d.status}</span>`); setIndS('err','Polygon key rejected'); return false; }
+    if(d.results?.length>0){ setText('<span style="color:#2e7d32">✓ Polygon connected · key valid</span>'); setIndS('ok','Polygon connected'); return true; }
+    setText('<span style="color:#e65100">⚠ Connected but no data returned</span>');
+    return false;
+  }catch(e){
+    setText(`<span style="color:#c62828">❌ Error: ${e.message}</span>`);
+    return false;
+  }
 }
 
 function computeIndicators(bars){
@@ -622,11 +703,23 @@ function computeIndicators(bars){
   };
 }
 
-const needsFetch = t => { if(!isUS(t))return false; const c=techCache[t]; return !c||c.cacheDate!==today(); };
+function updateFetchStatus(){
+  const el=document.getElementById('fetch-status'); if(!el)return;
+  const usTickers=TICKERS.filter(isUS);
+  el.innerHTML=usTickers.map(t=>{
+    const c=techCache[t];
+    const done=c&&c.cacheDate===today()&&c.macdVal!=null;
+    const bg=done?'#e8f5e9':'#fff3e0';
+    const col=done?'#2e7d32':'#e65100';
+    const icon=done?'✓':'…';
+    return`<span style="background:${bg};color:${col};padding:2px 7px;border-radius:20px;font-size:10px">${icon} ${t}</span>`;
+  }).join('');
+}
 
 async function runFetchQueue(){
   if(isFetching)return;
   const toFetch=TICKERS.filter(needsFetch);
+  updateFetchStatus();
   if(!toFetch.length){
     setIndS('ok','All indicators up to date');
     document.getElementById('mprog-wrap').style.display='none';
@@ -647,6 +740,7 @@ async function runFetchQueue(){
       if(bars) techCache[t]=computeIndicators(bars);
       done++;
       document.getElementById('mpbar').style.width=Math.round(done/toFetch.length*100)+'%';
+      updateFetchStatus();
       renderGrid();
     }));
     if(i+BATCH<toFetch.length){
@@ -660,7 +754,7 @@ async function runFetchQueue(){
   document.getElementById('mbatch').textContent='';
   isFetching=false;
   setIndS('ok',`Indicators computed for ${done} tickers`);
-  updateSigHistory(); checkFlashAlerts(); renderGrid(); dbSave();
+  updateSigHistory(); checkFlashAlerts(); updateFetchStatus(); renderGrid(); dbSave();
 }
 function clearCacheRun(){ techCache={}; ls.set('tech',{}); isFetching=false; renderGrid(); runFetchQueue(); }
 
@@ -793,7 +887,7 @@ function updateSigHistory(){
 }
 
 function isFlash(t,ind){ const h=sigHistory[`${t}_${ind}`]||[]; if(h.length<3)return false; return h.slice(-3).every(x=>BRIGHT.has(x.sig)); }
-function anyFlash(t){ return INDICATORS.some(ind=>isFlash(t,ind)); }
+function anyFlash(t){ return INDICATORS.some(ind=>isFlash(t,ind))||volIsFlash(t); }
 
 function checkFlashAlerts(){
   const td=today(); let changed=false;
@@ -843,29 +937,39 @@ function renderGrid(){
   // 9 columns: Watchlist + MACD200 + MACD50 + MACD20 + RSI + BB + ATR + ADX + [future]
   const numCols=9;
   const grid=document.getElementById('ind-grid');
-  grid.style.gridTemplateColumns='160px repeat(3,118px) 118px 118px 118px 118px 100px';
+  grid.style.gridTemplateColumns='145px 90px 70px 70px 80px repeat(3,105px) 118px 118px 118px 118px 112px 95px';
   grid.style.gridTemplateRows=`auto auto repeat(${items.length},auto)`;
 
   let html='';
 
   // Row 1 — Group headers
-  html+=`<div class="col-hdr" style="text-align:left">Watchlist<span class="sub">Finnhub live · 60s</span></div>`;
-  html+=`<div class="col-hdr" style="grid-column:span 3">MACD (12,26,9)<span class="sub">σ distance from MA · crossover direction</span></div>`;
-  html+=`<div class="col-hdr">RSI (14)<span class="sub">momentum · zone</span></div>`;
-  html+=`<div class="col-hdr">Bollinger (20,2)<span class="sub">%B · bandwidth</span></div>`;
-  html+=`<div class="col-hdr">ATR (14)<span class="sub">vol regime</span></div>`;
-  html+=`<div class="col-hdr">ADX (14)<span class="sub">trend strength</span></div>`;
+  html+=`<div class="col-hdr" style="text-align:left">Watchlist<span class="sub">Finnhub live · 60s</span><span class="col-tip">?<span class="tip-box tip-left">Live price quotes fetched from Finnhub API every 60 seconds. Shows ticker symbol, % change since previous close, and asset type (Stock/ETF/Crypto/HK/DE/FR).</span></span></div>`;
+  html+=`<div class="col-hdr">Price<span class="sub">live</span><span class="col-tip">?<span class="tip-box">Last traded price from Finnhub live quote. Updates every 60s. Falls back to static reference price if Finnhub doesn't return data (shown as "static" in grey).</span></span></div>`;
+  html+=`<div class="col-hdr">P/E<span class="sub">ratio</span><span class="col-tip">?<span class="tip-box">Price-to-Earnings ratio = Stock Price ÷ Earnings Per Share (trailing 12 months). &lt;15 = value (green), 15–50 = normal, &gt;50 = expensive (amber). ETFs/crypto show — as they have no earnings.</span></span></div>`;
+  html+=`<div class="col-hdr">PEG<span class="sub">growth adj</span><span class="col-tip">?<span class="tip-box">PEG Ratio = P/E ÷ Earnings Growth Rate. Adjusts P/E for growth. &lt;1 = undervalued relative to growth (green), 1–2 = fairly valued, 2–3 = expensive (amber), &gt;3 = high (red).</span></span></div>`;
+  html+=`<div class="col-hdr">Op Margin<span class="sub">net %</span><span class="col-tip">?<span class="tip-box">Net Operating Margin = Operating Income ÷ Revenue × 100. Measures how much profit a company makes per £1 of revenue after operating costs. &gt;30% = high (dark green), 15–30% = good, 5–15% = acceptable, 0–5% = thin (amber), ≤0% = losing money (red).</span></span></div>`;
+  html+=`<div class="col-hdr" style="grid-column:span 3">(12,26,9)<span class="sub">σ distance from MA · crossover direction</span><span class="col-tip">?<span class="tip-box">MACD = EMA(12) − EMA(26). Signal line = EMA(9) of MACD. Histogram = MACD − Signal. Signal = distance of MACD from the selected Moving Average (MA20/50/200) measured in standard deviations of the histogram (σ). Bright = &gt;2σ + crossover, Normal = 1–2σ, Light = 0.5–1σ, Grey = &lt;0.5σ.</span></span></div>`;
+  html+=`<div class="col-hdr">RSI (14)<span class="sub">momentum · zone</span><span class="col-tip">?<span class="tip-box">Relative Strength Index over 14 periods using Wilder's smoothing. Measures speed and magnitude of recent price changes. Signal combines zone (RSI level) and momentum (change over 3 days). Bright green = fast rise (&gt;${CFG.rsi?.fast||5}pts/3d), Green = moderate rise, Light green = slow rise. Reversed for reds. Flat (±${CFG.rsi?.slow||1}pt) = Grey.</span></span></div>`;
+  html+=`<div class="col-hdr">Bollinger (20,2)<span class="sub">%B · bandwidth</span><span class="col-tip">?<span class="tip-box">Bollinger Bands: Middle = SMA(20), Upper/Lower = SMA ± 2 standard deviations. %B = (Price − Lower) ÷ (Upper − Lower). %B &gt;1 = above upper band (bright green), &gt;0.8 = near upper, &lt;0 = below lower band (bright red). Bandwidth vs 20-bar mean shows Squeeze (contraction) or Expanding (breakout).</span></span></div>`;
+  html+=`<div class="col-hdr">ATR (14)<span class="sub">vol regime</span><span class="col-tip">?<span class="tip-box">Average True Range over 14 periods. True Range = max(High−Low, |High−PrevClose|, |Low−PrevClose|). Compared to its own 20-day mean. Rising ATR = increasing volatility (reds — caution). Falling ATR = calming market (greens — lower risk). Ratio vs mean shown (e.g. 1.8×).</span></span></div>`;
+  html+=`<div class="col-hdr">ADX (14)<span class="sub">trend strength</span><span class="col-tip">?<span class="tip-box">Average Directional Index over 14 periods. Measures trend strength regardless of direction. DI+ and DI− show direction. ADX &gt;${(CFG.adx?.strong||25)*1.5} = very strong trend, &gt;${CFG.adx?.strong||25} = strong, &gt;${CFG.adx?.weak||20} = moderate, &lt;${CFG.adx?.weak||20} = no clear trend (grey). Greens = strong uptrend (DI+ &gt; DI−). Reds = strong downtrend (DI− &gt; DI+).</span></span></div>`;
+  html+=`<div class="col-hdr">Vol Alert<span class="sub">daily vol vs mean</span><span class="col-tip">?<span class="tip-box">Daily volatility = |% change from previous close|. Compared to the mean daily vol of the entire watchlist. Bright green = vol &gt;2× mean AND closed up. Green = vol &gt;1× mean AND up. Bright red = vol &gt;2× mean AND closed down. Red = &gt;1× mean AND down. Grey = vol within 0.7×–1.3× of mean. ⚡ = same signal for 3+ consecutive days.</span></span></div>`;
   html+=`<div class="col-hdr" style="background:#1a2940;opacity:.65">Next →<span class="sub">Stochastic · OBV</span></div>`;
 
   // Row 2 — Sub-headers
-  html+=`<div class="col-sub" style="text-align:left">Ticker · price · chg</div>`;
-  html+=`<div class="col-sub">vs MA200</div>`;
-  html+=`<div class="col-sub">vs MA50</div>`;
-  html+=`<div class="col-sub">vs MA20</div>`;
+  html+=`<div class="col-sub" style="text-align:left">Ticker · chg · type</div>`;
+  html+=`<div class="col-sub">last price</div>`;
+  html+=`<div class="col-sub">trailing</div>`;
+  html+=`<div class="col-sub">P/E ÷ growth</div>`;
+  html+=`<div class="col-sub">oper. margin</div>`;
+  html+=`<div class="col-sub">MA200</div>`;
+  html+=`<div class="col-sub">MA50</div>`;
+  html+=`<div class="col-sub">MA20</div>`;
   html+=`<div class="col-sub">RSI + 3d mom</div>`;
   html+=`<div class="col-sub">%B + squeeze</div>`;
   html+=`<div class="col-sub">ATR vs mean</div>`;
   html+=`<div class="col-sub">ADX + DI dir</div>`;
+  html+=`<div class="col-sub">vol · flash</div>`;
   html+=`<div class="col-sub">coming soon</div>`;
 
   // Data rows
@@ -876,11 +980,47 @@ function renderGrid(){
     const chgStr=chg!=null?fc(chg):'—';
     const chgCls=chg!=null?(chg>=0?'up':'dn'):'';
 
-    // ── Watchlist cell ──
+    // ── Watchlist cell (ticker + chg + type) ──
     html+=`<div class="ind-cell cell-watch" onclick="openModal('${t}')">
       <div class="w-ticker">${t}${flash?` <span style="font-size:11px">⚡</span>`:''} <span class="w-type">${typ}</span></div>
-      <div class="w-price">${price}</div>
       <div class="w-chg ${chgCls}">${chgStr}</div>
+    </div>`;
+
+    // ── Price cell — live from Finnhub, fallback to SCR static ──
+    const scrFallback = SCR.find(s=>s.ticker===t);
+    const livePrice = q?.price ?? scrFallback?.price ?? null;
+    const priceDisplay = livePrice!=null ? '$'+fp(livePrice) : '—';
+    const priceBg = q?.price!=null ? '#fff' : '#fafafa'; // slight grey if using fallback
+    html+=`<div class="ind-cell" style="text-align:right;font-weight:700;font-size:13px;cursor:pointer;background:${priceBg};color:#111" onclick="openModal('${t}')">
+      ${priceDisplay}
+      ${!q?.price&&scrFallback?.price?`<div style="font-size:8px;color:#bbb;margin-top:1px">static</div>`:''}
+    </div>`;
+
+    // ── P/E cell ──
+    const peData = SCR.find(s=>s.ticker===t);
+    const peVal  = peData?.pe!=null ? peData.pe.toFixed(1) : '—';
+    const peBg   = peData?.pe!=null ? (peData.pe>50?'#fff3e0':peData.pe<15?'#e8f5e9':'#fff') : '#fff';
+    const peFg   = peData?.pe!=null ? (peData.pe>50?'#e65100':peData.pe<15?'#2e7d32':'#111') : '#bbb';
+    html+=`<div class="ind-cell" style="text-align:right;font-size:13px;font-weight:600;color:${peFg};background:${peBg};cursor:pointer" onclick="openModal('${t}')">
+      ${peVal}
+    </div>`;
+
+    // ── PEG cell ──
+    const pegVal = peData?.peg!=null ? peData.peg.toFixed(2) : '—';
+    // PEG <1 = undervalued (green), 1–2 = fair (white), >2 = expensive (amber/red)
+    const pegBg  = peData?.peg!=null ? (peData.peg<1?'#e8f5e9':peData.peg<=2?'#fff':peData.peg<=3?'#fff3e0':'#ffebee') : '#fff';
+    const pegFg  = peData?.peg!=null ? (peData.peg<1?'#2e7d32':peData.peg<=2?'#111':peData.peg<=3?'#e65100':'#c62828') : '#bbb';
+    html+=`<div class="ind-cell" style="text-align:right;font-size:13px;font-weight:600;color:${pegFg};background:${pegBg};cursor:pointer" onclick="openModal('${t}')">
+      ${pegVal}
+    </div>`;
+
+    // ── Net Operating Margin cell ──
+    const nomVal = peData?.nom!=null ? peData.nom.toFixed(1)+'%' : '—';
+    // NOM >30% = high margin (green), 15–30% = good (light green), 5–15% = ok (white), <5% = thin (amber), <=0 = red
+    const nomBg  = peData?.nom!=null ? (peData.nom<=0?'#ffebee':peData.nom>30?'#e8f5e9':peData.nom>15?'#f1f8e9':peData.nom>5?'#fff':'#fff3e0') : '#fff';
+    const nomFg  = peData?.nom!=null ? (peData.nom<=0?'#c62828':peData.nom>30?'#2e7d32':peData.nom>15?'#558b2f':peData.nom>5?'#111':'#e65100') : '#bbb';
+    html+=`<div class="ind-cell" style="text-align:right;font-size:13px;font-weight:600;color:${nomFg};background:${nomBg};cursor:pointer" onclick="openModal('${t}')">
+      ${nomVal}
     </div>`;
 
     // ── MACD MA200 / MA50 / MA20 ──
@@ -968,8 +1108,26 @@ function renderGrid(){
       </div>`;
     }
 
+    // ── Vol Alert ──
+    {
+      const vsig=volEval(t), vcol=SIG[vsig]||SIG.none;
+      const vfl=volIsFlash(t);
+      const d=liveQ[t];
+      const dv=d&&d.changePct!=null?Math.abs(d.changePct):null;
+      const m=volMeans.daily;
+      const ratioStr=dv!=null&&m!=null?(dv/m).toFixed(1)+'×':'—';
+      const dvStr=dv!=null?dv.toFixed(1)+'%':'—';
+      html+=`<div class="ind-cell cell-sig" style="position:relative" onclick="openModal('${t}')">
+        ${vfl?`<span class="sig-flash" style="position:absolute;top:3px;right:4px;font-size:10px">⚡</span>`:''}
+        <div class="sig-pill" style="background:${vcol.bg}">
+          <span class="sig-label" style="color:${vcol.tx}">${vcol.lb}</span>
+          <span class="sig-val" style="color:${vcol.tx}">${dvStr} · ${ratioStr}</span>
+        </div>
+      </div>`;
+    }
+
     // ── Future ──
-    html+=`<div class="ind-cell cell-future"><div class="future-txt">Stochastic<br>OBV<br>coming soon</div></div>`;
+    html+=`<div class="ind-cell cell-future"><div class="future-txt">Stochastic<br>OBV<br>soon</div></div>`;
   });
 
   grid.innerHTML=html;
@@ -1010,6 +1168,14 @@ function openModal(t){
       <div><div style="font-size:10px;color:#888">H / L</div><div style="font-size:13px;margin-top:6px">${fp(q.high)} / ${fp(q.low)}</div></div>
       <div><div style="font-size:10px;color:#888">Prev close</div><div style="font-size:13px;margin-top:6px">${fp(q.prevClose)}</div></div>
     </div>`:''}
+    <div class="modal-section">Fundamentals</div>
+    ${(()=>{const fd=SCR.find(s=>s.ticker===t);return`
+      <div class="modal-row"><span class="modal-label">P/E ratio</span><span>${fd?.pe!=null?fd.pe.toFixed(1):'—'}</span></div>
+      <div class="modal-row"><span class="modal-label">PEG ratio</span><span>${fd?.peg!=null?fd.peg.toFixed(2)+' '+(fd.peg<1?'🟢 Undervalued':fd.peg<=2?'⚪ Fair':fd.peg<=3?'🟡 Expensive':'🔴 High'):'—'}</span></div>
+      <div class="modal-row"><span class="modal-label">Net op. margin</span><span>${fd?.nom!=null?fd.nom.toFixed(1)+'% '+(fd.nom<=0?'🔴 Negative':fd.nom<=5?'🟡 Thin':fd.nom<=15?'⚪ Acceptable':fd.nom<=30?'🟢 Good':'🟢 High'):'—'}</span></div>
+    `;})()}
+    <div class="modal-section">Vol Alert</div>
+    ${(()=>{const vsig=volEval(t),vcol=SIG[vsig]||SIG.none,vfl=volIsFlash(t),d=liveQ[t],dv=d&&d.changePct!=null?Math.abs(d.changePct):null,m=volMeans.daily;return`<div class="modal-row"><span class="modal-label">Daily vol</span><span>${dv!=null?dv.toFixed(2)+'%':'—'} · ${dv!=null&&m?(dv/m).toFixed(2)+'× mean':'—'} <span class="sbadge" style="background:${vcol.bg};color:${vcol.tx}">${vcol.lb}${vfl?' ⚡':''}</span></span></div>`;})()}
     <div class="modal-section">MACD (12,26,9)</div>
     ${macdRows}
     ${c?`<div class="modal-row"><span class="modal-label">MACD / Signal / Hist</span><span style="font-family:monospace;font-size:11px">${fsig(c.macdVal)} / ${fsig(c.macdSigVal)} / ${fsig(c.macdHistVal)}</span></div>
@@ -1021,6 +1187,7 @@ function openModal(t){
     ${!isUS(t)?`<div style="margin-top:.75rem;padding:.65rem;background:#fff8e1;border-radius:8px;font-size:11px;color:#f57f17">⚠ Non-US ticker. Technical indicators require Polygon.io historical data (US only on free tier). Full data available once Supabase backend is live.</div>`:''}
     ${!c&&isUS(t)?`<div style="margin-top:.75rem;padding:.65rem;background:#e3f2fd;border-radius:8px;font-size:11px;color:#0d47a1">⏳ Historical data is being fetched. Data will appear shortly.</div>`:''}
     <div style="margin-top:1rem;display:flex;gap:8px;flex-wrap:wrap">
+      ${volIsFlash(t)?`<span class="sbadge" style="background:#fff3e0;color:#e65100">⚡ VOL flash</span>`:''}
       ${INDICATORS.map(ind=>isFlash(t,ind)?`<span class="sbadge" style="background:#fff3e0;color:#e65100">⚡ ${ind.toUpperCase()} flash</span>`:'').join('')}
     </div>`;
   document.getElementById('modal-bg').classList.add('open');
@@ -1049,13 +1216,35 @@ async function volRefreshAll(){volSetS('loading','Fetching…');await refreshLiv
 // ═══════════════════════════════════════════════════════
 // SCREENER
 // ═══════════════════════════════════════════════════════
-const SCR=[{ticker:'AAPL',name:'Apple Inc.',price:213.50,change:2.14,pe:29.2,vol:58.4,mktcap:'3.3T',sector:'Technology',signal:'Buy',data:[195,198,202,205,207,210,213]},{ticker:'MSFT',name:'Microsoft',price:421.80,change:1.87,pe:34.1,vol:22.1,mktcap:'3.1T',sector:'Technology',signal:'Buy',data:[405,408,412,415,418,420,421]},{ticker:'GOOGL',name:'Alphabet',price:178.30,change:-0.43,pe:22.8,vol:19.7,mktcap:'2.2T',sector:'Technology',signal:'Hold',data:[182,180,179,181,178,179,178]},{ticker:'NVDA',name:'NVIDIA',price:952.40,change:5.63,pe:68.9,vol:44.8,mktcap:'2.3T',sector:'Technology',signal:'Buy',data:[890,905,918,930,940,948,952]},{ticker:'META',name:'Meta',price:528.60,change:-1.22,pe:26.4,vol:17.3,mktcap:'1.3T',sector:'Technology',signal:'Hold',data:[540,536,532,530,528,529,528]},{ticker:'JPM',name:'JPMorgan',price:234.10,change:0.87,pe:12.3,vol:12.5,mktcap:'672B',sector:'Finance',signal:'Buy',data:[228,229,231,232,233,234,234]},{ticker:'GS',name:'Goldman Sachs',price:512.30,change:1.45,pe:14.8,vol:4.2,mktcap:'163B',sector:'Finance',signal:'Hold',data:[502,505,508,510,511,512,512]},{ticker:'BAC',name:'Bank of America',price:43.80,change:-0.68,pe:11.2,vol:38.6,mktcap:'341B',sector:'Finance',signal:'Hold',data:[45.2,44.9,44.5,44.2,44.0,43.9,43.8]},{ticker:'JNJ',name:'Johnson & Johnson',price:159.20,change:0.32,pe:15.7,vol:7.4,mktcap:'383B',sector:'Healthcare',signal:'Hold',data:[157,157.5,158,158.5,159,159,159]},{ticker:'PFE',name:'Pfizer',price:27.40,change:-1.87,pe:8.4,vol:28.9,mktcap:'155B',sector:'Healthcare',signal:'Sell',data:[29.8,29.2,28.8,28.4,28.0,27.7,27.4]},{ticker:'UNH',name:'UnitedHealth',price:489.70,change:2.31,pe:19.6,vol:3.8,mktcap:'452B',sector:'Healthcare',signal:'Buy',data:[475,478,481,484,487,488,489]},{ticker:'XOM',name:'ExxonMobil',price:108.50,change:-0.54,pe:14.1,vol:18.2,mktcap:'471B',sector:'Energy',signal:'Hold',data:[110,110,109.5,109,108.8,108.6,108.5]},{ticker:'TSLA',name:'Tesla',price:184.30,change:-2.87,pe:52.1,vol:87.3,mktcap:'588B',sector:'Consumer',signal:'Sell',data:[198,195,192,189,187,186,184]},{ticker:'WMT',name:'Walmart',price:68.40,change:0.76,pe:28.9,vol:11.4,mktcap:'549B',sector:'Consumer',signal:'Buy',data:[66,66.5,67,67.4,67.8,68.1,68.4]},{ticker:'QQQ',name:'Nasdaq 100 ETF',price:712.39,change:1.87,pe:null,vol:31.4,mktcap:'ETF',sector:'Technology',signal:'Buy',data:[695,700,704,706,708,710,712]},{ticker:'GLD',name:'Gold ETF',price:431.61,change:0.42,pe:null,vol:8.2,mktcap:'ETF',sector:'Energy',signal:'Hold',data:[426,427,428,429,430,431,431]}];
+const SCR=[
+  {ticker:'AAPL', name:'Apple Inc.',          price:213.50,change:2.14, pe:29.2, peg:2.8,  nom:26.4, vol:58.4, mktcap:'3.3T', sector:'Technology',signal:'Buy', data:[195,198,202,205,207,210,213]},
+  {ticker:'MSFT', name:'Microsoft',            price:421.80,change:1.87, pe:34.1, peg:2.2,  nom:41.6, vol:22.1, mktcap:'3.1T', sector:'Technology',signal:'Buy', data:[405,408,412,415,418,420,421]},
+  {ticker:'GOOGL',name:'Alphabet',             price:178.30,change:-0.43,pe:22.8, peg:1.4,  nom:27.4, vol:19.7, mktcap:'2.2T', sector:'Technology',signal:'Hold',data:[182,180,179,181,178,179,178]},
+  {ticker:'NVDA', name:'NVIDIA',               price:952.40,change:5.63, pe:68.9, peg:1.1,  nom:55.0, vol:44.8, mktcap:'2.3T', sector:'Technology',signal:'Buy', data:[890,905,918,930,940,948,952]},
+  {ticker:'META', name:'Meta',                 price:528.60,change:-1.22,pe:26.4, peg:1.5,  nom:35.3, vol:17.3, mktcap:'1.3T', sector:'Technology',signal:'Hold',data:[540,536,532,530,528,529,528]},
+  {ticker:'QCOM', name:'Qualcomm',             price:214.51,change:1.99, pe:18.4, peg:1.7,  nom:26.1, vol:8.2,  mktcap:'232B', sector:'Technology',signal:'Buy', data:[204,206,208,210,212,213,214]},
+  {ticker:'JPM',  name:'JPMorgan',             price:234.10,change:0.87, pe:12.3, peg:1.8,  nom:24.1, vol:12.5, mktcap:'672B', sector:'Finance',   signal:'Buy', data:[228,229,231,232,233,234,234]},
+  {ticker:'GS',   name:'Goldman Sachs',        price:512.30,change:1.45, pe:14.8, peg:2.1,  nom:16.8, vol:4.2,  mktcap:'163B', sector:'Finance',   signal:'Hold',data:[502,505,508,510,511,512,512]},
+  {ticker:'BAC',  name:'Bank of America',      price:43.80, change:-0.68,pe:11.2, peg:1.3,  nom:14.2, vol:38.6, mktcap:'341B', sector:'Finance',   signal:'Hold',data:[45.2,44.9,44.5,44.2,44.0,43.9,43.8]},
+  {ticker:'BRK-B',name:'Berkshire Hathaway',   price:483.77,change:0.54, pe:10.4, peg:1.2,  nom:7.8,  vol:3.1,  mktcap:'1.1T', sector:'Finance',   signal:'Buy', data:[476,478,480,481,482,483,483]},
+  {ticker:'JNJ',  name:'Johnson & Johnson',    price:159.20,change:0.32, pe:15.7, peg:2.6,  nom:18.3, vol:7.4,  mktcap:'383B', sector:'Healthcare',signal:'Hold',data:[157,157.5,158,158.5,159,159,159]},
+  {ticker:'PFE',  name:'Pfizer',               price:27.40, change:-1.87,pe:8.4,  peg:3.1,  nom:7.6,  vol:28.9, mktcap:'155B', sector:'Healthcare',signal:'Sell',data:[29.8,29.2,28.8,28.4,28.0,27.7,27.4]},
+  {ticker:'UNH',  name:'UnitedHealth',         price:489.70,change:2.31, pe:19.6, peg:1.6,  nom:6.1,  vol:3.8,  mktcap:'452B', sector:'Healthcare',signal:'Buy', data:[475,478,481,484,487,488,489]},
+  {ticker:'XOM',  name:'ExxonMobil',           price:108.50,change:-0.54,pe:14.1, peg:2.9,  nom:10.4, vol:18.2, mktcap:'471B', sector:'Energy',    signal:'Hold',data:[110,110,109.5,109,108.8,108.6,108.5]},
+  {ticker:'OKLO', name:'Oklo Inc.',            price:70.60, change:3.21, pe:null, peg:null,  nom:-48.2,vol:4.1,  mktcap:'5.8B', sector:'Energy',    signal:'Hold',data:[64,65,67,68,69,70,70]},
+  {ticker:'SMR',  name:'NuScale Power',        price:12.30, change:1.65, pe:null, peg:null,  nom:-210.0,vol:2.8, mktcap:'1.1B', sector:'Energy',    signal:'Hold',data:[10,10.5,11,11.3,11.8,12,12.3]},
+  {ticker:'TSLA', name:'Tesla',                price:184.30,change:-2.87,pe:52.1, peg:3.8,  nom:9.2,  vol:87.3, mktcap:'588B', sector:'Consumer',  signal:'Sell',data:[198,195,192,189,187,186,184]},
+  {ticker:'WMT',  name:'Walmart',              price:68.40, change:0.76, pe:28.9, peg:2.4,  nom:3.1,  vol:11.4, mktcap:'549B', sector:'Consumer',  signal:'Buy', data:[66,66.5,67,67.4,67.8,68.1,68.4]},
+  {ticker:'QQQ',  name:'Nasdaq 100 ETF',       price:712.39,change:1.87, pe:null, peg:null,  nom:null, vol:31.4, mktcap:'ETF',  sector:'Technology',signal:'Buy', data:[695,700,704,706,708,710,712]},
+  {ticker:'GLD',  name:'Gold ETF',             price:431.61,change:0.42, pe:null, peg:null,  nom:null, vol:8.2,  mktcap:'ETF',  sector:'Energy',    signal:'Hold',data:[426,427,428,429,430,431,431]},
+  {ticker:'TLT',  name:'iShares 20Y Treasury', price:84.75, change:-0.31,pe:null, peg:null,  nom:null, vol:5.4,  mktcap:'ETF',  sector:'Finance',   signal:'Hold',data:[86,85.5,85,84.8,84.6,84.7,84.7]},
+];
 let scrFiltered=[...SCR],scrSortKey=null,scrSortDir=1;
 function scrRender(){const ups=SCR.filter(s=>s.change>0).length;document.getElementById('scr-metrics').innerHTML=`<div class="metric"><div class="metric-label">Stocks</div><div class="metric-value">${SCR.length}</div><div class="metric-sub">${ups} up · ${SCR.length-ups} down</div></div><div class="metric"><div class="metric-label">Buy signals</div><div class="metric-value up">${SCR.filter(s=>s.signal==='Buy').length}</div><div class="metric-sub">${SCR.filter(s=>s.signal==='Hold').length} hold</div></div><div class="metric"><div class="metric-label">Avg P/E</div><div class="metric-value">${(SCR.filter(s=>s.pe).reduce((a,b)=>a+b.pe,0)/SCR.filter(s=>s.pe).length).toFixed(1)}</div><div class="metric-sub">across ${SCR.filter(s=>s.pe).length} stocks</div></div>`;scrRenderTable();}
 function scrFilter(){const sec=document.getElementById('f-sector').value,sig=document.getElementById('f-signal').value,pmin=parseFloat(document.getElementById('f-pe-min').value)||null,pmax=parseFloat(document.getElementById('f-pe-max').value)||null,vmin=parseFloat(document.getElementById('f-vol').value)||null,src=document.getElementById('f-search').value.toLowerCase();scrFiltered=SCR.filter(s=>{if(sec&&s.sector!==sec)return false;if(sig&&s.signal!==sig)return false;if(pmin&&(!s.pe||s.pe<pmin))return false;if(pmax&&(!s.pe||s.pe>pmax))return false;if(vmin&&s.vol<vmin)return false;if(src&&!s.ticker.toLowerCase().includes(src)&&!s.name.toLowerCase().includes(src))return false;return true;});scrRenderTable();}
 function scrReset(){['f-sector','f-signal'].forEach(id=>document.getElementById(id).value='');['f-pe-min','f-pe-max','f-vol','f-search'].forEach(id=>document.getElementById(id).value='');scrFiltered=[...SCR];scrRenderTable();}
 function scrSort(k){if(scrSortKey===k)scrSortDir*=-1;else{scrSortKey=k;scrSortDir=1;}scrRenderTable();}
-function scrRenderTable(){if(scrSortKey){scrFiltered.sort((a,b)=>{let va=a[scrSortKey],vb=b[scrSortKey];if(va==null)va=scrSortDir>0?Infinity:-Infinity;if(vb==null)vb=scrSortDir>0?Infinity:-Infinity;if(typeof va==='string')return scrSortDir*va.localeCompare(vb);return scrSortDir*(va-vb);});}const tbody=document.getElementById('scr-body'),nr=document.getElementById('scr-noresult');document.getElementById('scr-count').textContent=`Showing ${scrFiltered.length} of ${SCR.length}`;if(!scrFiltered.length){tbody.innerHTML='';nr.style.display='block';return;}nr.style.display='none';const SB={Technology:'#E6F1FB|#0C447C',Healthcare:'#EAF3DE|#27500A',Finance:'#FAEEDA|#633806',Energy:'#FCEBEB|#791F1F',Consumer:'#EEEDFE|#3C3489'};tbody.innerHTML=scrFiltered.map((s,i)=>{const[sb,st]=(SB[s.sector]||'#eee|#555').split('|');const sc=s.signal==='Buy'?'#2e7d32':s.signal==='Sell'?'#c62828':'#795548';const sd=s.signal==='Buy'?'#43a047':s.signal==='Sell'?'#e53935':'#ff8a65';return`<tr><td><div style="font-weight:700;font-size:13px">${s.ticker}</div><div style="font-size:10px;color:#888">${s.name}</div></td><td>$${s.price.toFixed(2)}</td><td class="${s.change>=0?'up':'dn'}">${s.change>=0?'+':''}${s.change.toFixed(2)}%</td><td>${s.pe?s.pe.toFixed(1):'—'}</td><td>${s.vol.toFixed(1)}</td><td>${s.mktcap}</td><td><span style="background:${sb};color:${st};padding:2px 7px;border-radius:20px;font-size:10px;font-weight:600">${s.sector}</span></td><td><span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:${sc}"><span style="width:7px;height:7px;border-radius:50%;background:${sd};flex-shrink:0"></span>${s.signal}</span></td><td><canvas id="sp-${i}" width="72" height="26"></canvas></td></tr>`;}).join('');setTimeout(()=>scrFiltered.forEach((s,i)=>{const cv=document.getElementById(`sp-${i}`);if(!cv)return;if(sparkCharts[i])sparkCharts[i].destroy();const mn=Math.min(...s.data)*.998,mx=Math.max(...s.data)*1.002;sparkCharts[i]=new Chart(cv,{type:'line',data:{labels:s.data.map((_,j)=>j),datasets:[{data:s.data,borderColor:s.change>=0?'#43a047':'#e53935',borderWidth:1.5,pointRadius:0,tension:.3,fill:false}]},options:{responsive:false,animation:false,plugins:{legend:{display:false},tooltip:{enabled:false}},scales:{x:{display:false},y:{display:false,min:mn,max:mx}}}});}),60);}
+function scrRenderTable(){if(scrSortKey){scrFiltered.sort((a,b)=>{let va=a[scrSortKey],vb=b[scrSortKey];if(va==null)va=scrSortDir>0?Infinity:-Infinity;if(vb==null)vb=scrSortDir>0?Infinity:-Infinity;if(typeof va==='string')return scrSortDir*va.localeCompare(vb);return scrSortDir*(va-vb);});}const tbody=document.getElementById('scr-body'),nr=document.getElementById('scr-noresult');document.getElementById('scr-count').textContent=`Showing ${scrFiltered.length} of ${SCR.length}`;if(!scrFiltered.length){tbody.innerHTML='';nr.style.display='block';return;}nr.style.display='none';const SB={Technology:'#E6F1FB|#0C447C',Healthcare:'#EAF3DE|#27500A',Finance:'#FAEEDA|#633806',Energy:'#FCEBEB|#791F1F',Consumer:'#EEEDFE|#3C3489'};tbody.innerHTML=scrFiltered.map((s,i)=>{const[sb,st]=(SB[s.sector]||'#eee|#555').split('|');const sc=s.signal==='Buy'?'#2e7d32':s.signal==='Sell'?'#c62828':'#795548';const sd=s.signal==='Buy'?'#43a047':s.signal==='Sell'?'#e53935':'#ff8a65';const priceStr=s.price!=null?'$'+s.price.toFixed(2):'—';const chgStr=s.change!=null?((s.change>=0?'+':'')+s.change.toFixed(2)+'%'):'—';const chgCls=s.change!=null?(s.change>=0?'up':'dn'):'';const volStr=s.vol!=null?s.vol.toFixed(1):'—';return`<tr><td><div style="font-weight:700;font-size:13px">${s.ticker}</div><div style="font-size:10px;color:#888">${s.name}</div></td><td>${priceStr}</td><td class="${chgCls}">${chgStr}</td><td>${s.pe?s.pe.toFixed(1):'—'}</td><td>${volStr}</td><td>${s.mktcap||'—'}</td><td><span style="background:${sb};color:${st};padding:2px 7px;border-radius:20px;font-size:10px;font-weight:600">${s.sector||'—'}</span></td><td><span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:${sc}"><span style="width:7px;height:7px;border-radius:50%;background:${sd};flex-shrink:0"></span>${s.signal||'—'}</span></td><td>${s.data&&s.data.length>0?`<canvas id="sp-${i}" width="72" height="26"></canvas>`:''}</td></tr>`;}).join('');setTimeout(()=>scrFiltered.forEach((s,i)=>{if(!s.data||s.data.length===0)return;const cv=document.getElementById(`sp-${i}`);if(!cv)return;if(sparkCharts[i])sparkCharts[i].destroy();const mn=Math.min(...s.data)*.998,mx=Math.max(...s.data)*1.002;sparkCharts[i]=new Chart(cv,{type:'line',data:{labels:s.data.map((_,j)=>j),datasets:[{data:s.data,borderColor:s.change>=0?'#43a047':'#e53935',borderWidth:1.5,pointRadius:0,tension:.3,fill:false}]},options:{responsive:false,animation:false,plugins:{legend:{display:false},tooltip:{enabled:false}},scales:{x:{display:false},y:{display:false,min:mn,max:mx}}}});}),60);}
 
 // ═══════════════════════════════════════════════════════
 // GLOBAL REFRESH
@@ -1077,8 +1266,10 @@ async function refreshAll(){
 // ═══════════════════════════════════════════════════════
 async function init(){
   loadAll();
-  renderChips(); scrRender(); volUpdateStatsHdr(); volRenderFlashLog();
+  renderChips(); scrRender(); volUpdateStatsHdr(); volRenderFlashLog(); updateFetchStatus();
   setNavS('loading','Fetching live quotes…');
+  // Test Polygon key in background
+  testPolygonKey();
   await refreshLiveQuotes();
   volCalcMeans(false); volUpdateSH(); volCheckFlash();
   updateSigHistory(); checkFlashAlerts();
