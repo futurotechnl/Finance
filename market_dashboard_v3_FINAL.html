@@ -181,7 +181,7 @@ input,select,button{font-family:inherit}
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.85rem;flex-wrap:wrap;gap:8px">
     <div>
       <h2 style="font-size:17px;font-weight:700;color:#111">Multi-indicator dashboard</h2>
-      <p style="font-size:11px;color:#888;margin-top:2px">MACD · RSI · Bollinger Bands · ATR · ADX · Powered by technicalindicators.js · Data: Finnhub + Yahoo Finance</p>
+      <p style="font-size:11px;color:#888;margin-top:2px">MACD · RSI · Bollinger Bands · ATR · ADX · Data: Supabase (run fetch_and_store.py daily)</p>
     </div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       <button class="btn btn-sm" onclick="clearCacheRun()">↺ Force refetch</button>
@@ -331,7 +331,7 @@ input,select,button{font-family:inherit}
     <div style="margin-bottom:.85rem"><label style="font-size:11px;color:#666;display:block;margin-bottom:3px">Polygon.io key (optional — Yahoo Finance used by default)</label><input type="text" id="cfg-pg" style="width:100%;font-family:monospace;font-size:11px;padding:7px 9px;border:1px solid #ccc;border-radius:6px"></div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="btn btn-p" onclick="saveSettings()">Save &amp; restart</button>
-      <button class="btn" onclick="testPolygonKey()">🔑 Test data connection</button>
+      <button class="btn" onclick="loadIndicatorsFromSupabase()">🔄 Reload from Supabase</button>
       <span id="pg-key-status" style="font-size:12px;color:#666"></span>
     </div>
   </div>
@@ -545,11 +545,42 @@ async function refreshLiveQuotes(){
 }
 
 // ═══════════════════════════════════════════════════════
-// POLYGON + INDICATOR CALCULATION (via technicalindicators CDN)
+// SUPABASE — reads pre-computed indicators
+// Python script (fetch_and_store.py) writes these once per day
 // ═══════════════════════════════════════════════════════
-// Yahoo Finance — no API key, no CORS issues, works from any hosted page
-// ── Symbol conversion helpers ──
-// ── Yahoo Finance crumb authentication ──
+const SB_URL='https://ivdyyryyxhtlzoltykfq.supabase.co';
+const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml2ZHl5cnl5eGh0bHpvbHR5a2ZxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkzNjg1MjUsImV4cCI6MjA5NDk0NDUyNX0.62mYOuYgSLxIhMXN2sDyA_yMR5P_pp3VXz3LWeKbzV8';
+
+async function loadIndicatorsFromSupabase(){
+  setIndS('loading','Loading indicators from Supabase…');
+  try{
+    const r=await fetch(`${SB_URL}/rest/v1/indicators?select=*`,{
+      headers:{'apikey':SB_KEY,'Authorization':`Bearer ${SB_KEY}`}
+    });
+    if(!r.ok){setIndS('err',`Supabase error ${r.status}`);return false;}
+    const rows=await r.json();
+    if(!rows.length){setIndS('err','Supabase: no data — run fetch_and_store.py first');return false;}
+    rows.forEach(row=>{
+      techCache[row.ticker]={
+        macdVal:row.macd_val, macdSigVal:row.macd_sig, macdHistVal:row.macd_hist,
+        macdCrossover:row.macd_crossover||'none', histStdDev:row.hist_stddev||0,
+        ma20Val:row.ma20, ma50Val:row.ma50, ma200Val:row.ma200,
+        rsi14:row.rsi14, rsiHistory3d:[],
+        bbUpper:row.bb_upper, bbMiddle:row.bb_middle, bbLower:row.bb_lower,
+        bbPctB:row.bb_pct_b, bbWidth:row.bb_width, bbWidthMean:row.bb_width_mean,
+        atr14:row.atr14, atrMean:row.atr_mean, atrTrend:row.atr_trend||'flat',
+        adx14:row.adx14, diPlus:row.di_plus, diMinus:row.di_minus,
+        cacheDate:today(), updatedAt:row.updated_at,
+      };
+    });
+    setIndS('ok',`✓ Indicators loaded for ${rows.length} tickers from Supabase`);
+    updateFetchStatus(); updateSigHistory(); checkFlashAlerts(); renderGrid(); dbSave();
+    console.log(`✓ Supabase: loaded ${rows.length} tickers`);
+    return true;
+  }catch(e){setIndS('err','Supabase error — check console');console.error(e);return false;}
+}
+
+// ── Yahoo Finance crumb authentication (kept for compatibility)
 let _yahooCrumb=null, _yahooCrumbTime=0;
 async function getYahooCrumb(){
   // Reuse crumb for 60 minutes
@@ -765,49 +796,10 @@ function updateFetchStatus(){
   }).join('');
 }
 
-const needsFetch = t => { if(!isUS(t)) return false; const c=techCache[t]; return !c || c.cacheDate!==today() || c.macdVal==null; };
-
-async function runFetchQueue(){
-  if(isFetching)return;
-  const toFetch=TICKERS.filter(needsFetch);
-  updateFetchStatus();
-  if(!toFetch.length){
-    setIndS('ok','All indicators up to date');
-    document.getElementById('mprog-wrap').style.display='none';
-    updateSigHistory(); checkFlashAlerts(); renderGrid(); dbSave(); return;
-  }
-  isFetching=true;
-  document.getElementById('mprog-wrap').style.display='block';
-  setIndS('loading',`Fetching ${toFetch.length} US tickers…`);
-  const BATCH=1, DELAY=2000; // One at a time, 2s apart — safe under 60/min after quotes finish
-  let done=0;
-  for(let i=0;i<toFetch.length;i+=BATCH){
-    const batch=toFetch.slice(i,i+BATCH);
-    document.getElementById('mbatch').textContent=`(batch ${Math.floor(i/BATCH)+1}/${Math.ceil(toFetch.length/BATCH)})`;
-    document.getElementById('mpbar').style.width=Math.round(done/toFetch.length*100)+'%';
-    document.getElementById('mplbl').textContent=`Fetching batch ${Math.floor(i/BATCH)+1}/${Math.ceil(toFetch.length/BATCH)}: ${batch.join(', ')}…`;
-    await Promise.all(batch.map(async t=>{
-      const bars=await fetchPGOHLC(t);
-      if(bars) techCache[t]=computeIndicators(bars);
-      done++;
-      document.getElementById('mpbar').style.width=Math.round(done/toFetch.length*100)+'%';
-      updateFetchStatus();
-      renderGrid();
-    }));
-    if(i+BATCH<toFetch.length){
-      for(let s=Math.ceil(DELAY/1000);s>0;s--){
-        document.getElementById('mbatch').textContent=`(next batch in ${s}s)`;
-        await new Promise(r=>setTimeout(r,1000));
-      }
-    }
-  }
-  document.getElementById('mprog-wrap').style.display='none';
-  document.getElementById('mbatch').textContent='';
-  isFetching=false;
-  setIndS('ok',`Indicators computed for ${done} tickers`);
-  updateSigHistory(); checkFlashAlerts(); updateFetchStatus(); renderGrid(); dbSave();
-}
-function clearCacheRun(){ techCache={}; ls.set('tech',{}); isFetching=false; renderGrid(); runFetchQueue(); }
+const needsFetch = t => { if(!isUS(t)) return false; const c=techCache[t]; return !c||c.cacheDate!==today()||c.macdVal==null; };
+// runFetchQueue now just reloads from Supabase
+async function runFetchQueue(){ await loadIndicatorsFromSupabase(); }
+function clearCacheRun(){ techCache={}; ls.set('tech',{}); loadIndicatorsFromSupabase(); }
 
 // ═══════════════════════════════════════════════════════
 // SIGNAL EVALUATION
@@ -1328,11 +1320,8 @@ async function init(){
   document.getElementById('vlupd').textContent='Updated '+now;
   document.getElementById('ftime').textContent=now;
   setNavS('ok','Live'); dbSave();
-  // Wait 65s for Finnhub rate limit window to reset, and pre-fetch Yahoo crumb in parallel
-  setIndS('loading','Waiting 65s before fetching indicators (rate limit)…');
-  getYahooCrumb(); // start crumb fetch immediately, don't await
-  await new Promise(r=>setTimeout(r,65000));
-  runFetchQueue();
+  // Load indicators instantly from Supabase — no waiting, no rate limits
+  await loadIndicatorsFromSupabase();
   clearInterval(refreshInterval);
   refreshInterval=setInterval(refreshAll,60000);
 }
