@@ -554,9 +554,10 @@ async function refreshLiveQuotes(){
 // ── Finnhub historical candles — same API already working for live quotes ──
 // Free tier: daily resolution, ~1 year history, 60 calls/min, full CORS support
 async function fetchOHLC(sym){
-  if(!isUS(sym)) return null; // Finnhub free only covers US on candles
-  const to=Math.floor(Date.now()/1000);
-  const from=to-(365*86400); // 1 year — free tier limit
+  if(!isUS(sym)) return null;
+  const now=Math.floor(Date.now()/1000);
+  const to=now-(1*86400);   // yesterday — Finnhub free tier won't serve today's incomplete bar
+  const from=now-(365*86400); // 1 year back
   const url=`https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(sym)}&resolution=D&from=${from}&to=${to}&token=${CFG.fhKey}`;
   try{
     const r=await fetch(url,{signal:AbortSignal.timeout(12000)});
@@ -585,14 +586,26 @@ async function testPolygonKey(){
   const el=document.getElementById('pg-key-status');
   const el2=document.getElementById('pg-key-status-ind');
   const setText=(html)=>{if(el)el.innerHTML=html;if(el2)el2.innerHTML=html;};
-  setText('Testing Finnhub historical data…');
-  const bars=await fetchOHLC('AAPL');
-  if(bars&&bars.length>0){
-    setText(`<span style="color:#2e7d32">✓ Finnhub connected · ${bars.length} daily bars for AAPL</span>`);
-    setIndS('ok','Finnhub data connected');
-    return true;
+  setText('Testing Finnhub candles…');
+  const now=Math.floor(Date.now()/1000);
+  const url=`https://finnhub.io/api/v1/stock/candle?symbol=AAPL&resolution=D&from=${now-(365*86400)}&to=${now-86400}&token=${CFG.fhKey}`;
+  try{
+    const r=await fetch(url);
+    const d=await r.json();
+    console.log('Finnhub candle test response:',d);
+    if(d.s==='ok'&&d.c?.length>0){
+      setText(`<span style="color:#2e7d32">✓ Finnhub candles working · ${d.c.length} bars for AAPL</span>`);
+      setIndS('ok','Finnhub connected');
+      return true;
+    }
+    if(d.s==='no_data'){
+      setText(`<span style="color:#e65100">⚠ Finnhub returned no_data for AAPL — key may need permissions. Check console (F12).</span>`);
+    } else {
+      setText(`<span style="color:#c62828">❌ Finnhub status: "${d.s||'unknown'}" — see console (F12)</span>`);
+    }
+  }catch(e){
+    setText(`<span style="color:#c62828">❌ Fetch error: ${e.message}</span>`);
   }
-  setText('<span style="color:#c62828">❌ Finnhub candles failed — get your own free key at finnhub.io and paste it in Settings</span>');
   return false;
 }
 
