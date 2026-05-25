@@ -780,9 +780,51 @@ function computeIndicators(bars){
     }
   }catch(e){}
 
+  // ── Last close price (for price vs MA comparison) ──
+  const lastClose = closes[closes.length-1] ?? null;
+
+  // ── MA crossover detection (Golden Cross / Death Cross within last 14 bars) ──
+  let ma20CrossedMa200 = null; // 'bullish'=Golden Cross, 'bearish'=Death Cross
+  let ma50CrossedMa200 = null;
+  let ma20CrossedMa50  = null;
+  try{
+    const sma20All  = technicalindicators.SMA.calculate({period:20,  values:closes});
+    const sma50All  = technicalindicators.SMA.calculate({period:50,  values:closes});
+    const sma200All = technicalindicators.SMA.calculate({period:200, values:closes});
+    const lookback  = 14;
+    const len200 = sma200All.length;
+    if(len200 >= lookback+1){
+      for(let i=len200-lookback; i<len200; i++){
+        const i20  = sma20All.length  - (len200-i);
+        const i50  = sma50All.length  - (len200-i);
+        if(i20>=1&&i50>=1){
+          // MA20 vs MA200
+          if(!ma20CrossedMa200){
+            const prev=sma20All[i20-1]>sma200All[i-1], curr=sma20All[i20]>sma200All[i];
+            if(!prev&&curr) ma20CrossedMa200='bullish';
+            if(prev&&!curr) ma20CrossedMa200='bearish';
+          }
+          // MA50 vs MA200
+          if(!ma50CrossedMa200){
+            const prev=sma50All[i50-1]>sma200All[i-1], curr=sma50All[i50]>sma200All[i];
+            if(!prev&&curr) ma50CrossedMa200='bullish';
+            if(prev&&!curr) ma50CrossedMa200='bearish';
+          }
+          // MA20 vs MA50
+          if(!ma20CrossedMa50){
+            const prev=sma20All[i20-1]>sma50All[i50-1], curr=sma20All[i20]>sma50All[i50];
+            if(!prev&&curr) ma20CrossedMa50='bullish';
+            if(prev&&!curr) ma20CrossedMa50='bearish';
+          }
+        }
+      }
+    }
+  }catch(e){}
+
   return {
     macdVal, macdSigVal, macdHistVal, macdCrossover, histStdDev,
-    ma20Val, ma50Val, ma200Val,
+    ma20Val, ma50Val, ma200Val, lastClose,
+    ma20CrossedMa200, ma50CrossedMa200, ma20CrossedMa50,
     rsi14, rsiHistory3d,
     bbUpper, bbMiddle, bbLower, bbPctB, bbWidth, bbWidthMean,
     atr14, atrMean, atrTrend,
@@ -813,24 +855,55 @@ function clearCacheRun(){ techCache={}; ls.set('tech',{}); loadIndicatorsFromSup
 // SIGNAL EVALUATION
 // ═══════════════════════════════════════════════════════
 
-// MACD signal (σ distance from MA)
+// ── Price vs MA signal + MACD momentum confirmation + Golden/Death Cross flash ──
+// Signal = where PRICE sits relative to the moving average
+// Bright green = price well above MA AND MACD confirms bullish momentum
+// Golden/Death Cross (MA20/50 crossing MA200) = instant bright signal
 function evalMacd(t, maLevel){
-  const c=techCache[t]; if(!c)return isUS(t)?'loading':'none';
+  const c=techCache[t]; if(!c) return isUS(t)?'loading':'none';
+  const price=c.lastClose;
   const maVal=maLevel===20?c.ma20Val:maLevel===50?c.ma50Val:c.ma200Val;
-  if(c.macdVal==null||maVal==null||c.histStdDev===0)return'grey';
-  const dist=(c.macdVal-maVal)/c.histStdDev;
-  const {bright,normal,light}=CFG.thresholds;
-  const bull=c.macdCrossover==='bullish'||c.macdVal>c.macdSigVal;
-  const bear=c.macdCrossover==='bearish'||c.macdVal<c.macdSigVal;
-  if(dist>=bright&&bull)return'bright-green'; if(dist>=bright)return'green';
-  if(dist>=normal&&bull)return'green';        if(dist>=normal)return'light-green';
-  if(dist>=light)return'light-green';
-  if(dist<=-bright&&bear)return'bright-red';  if(dist<=-bright)return'red';
-  if(dist<=-normal&&bear)return'red';         if(dist<=-normal)return'light-red';
-  if(dist<=-light)return'light-red';
-  return'grey';
+  if(price==null||maVal==null) return 'grey';
+
+  // % distance of price from the MA
+  const pct=(price-maVal)/maVal*100;
+
+  // MACD momentum direction (confirms the trend)
+  const bull=c.macdVal!=null&&c.macdSigVal!=null&&c.macdVal>c.macdSigVal;
+  const bear=c.macdVal!=null&&c.macdSigVal!=null&&c.macdVal<c.macdSigVal;
+  const macdBull=c.macdCrossover==='bullish'||bull;
+  const macdBear=c.macdCrossover==='bearish'||bear;
+
+  // Golden Cross / Death Cross detection (MA20 or MA50 crossed MA200 in last 14 days)
+  if(maLevel===200){
+    if(c.ma20CrossedMa200==='bullish'||c.ma50CrossedMa200==='bullish') return'bright-green';
+    if(c.ma20CrossedMa200==='bearish'||c.ma50CrossedMa200==='bearish') return'bright-red';
+  }
+  if(maLevel===50){
+    if(c.ma20CrossedMa50==='bullish') return'bright-green';
+    if(c.ma20CrossedMa50==='bearish') return'bright-red';
+  }
+
+  // Price vs MA signal levels
+  if(pct>=5  &&macdBull) return'bright-green'; // strongly above + bullish MACD
+  if(pct>=5)             return'green';          // strongly above
+  if(pct>=2  &&macdBull) return'green';          // above + MACD confirms
+  if(pct>=0.5)           return'light-green';    // slightly above
+  if(pct<=-5 &&macdBear) return'bright-red';
+  if(pct<=-5)            return'red';
+  if(pct<=-2 &&macdBear) return'red';
+  if(pct<=-0.5)          return'light-red';
+  return'grey'; // within 0.5% — essentially at the MA
 }
-function macdDist(t,ma){ const c=techCache[t];if(!c)return null;const mv=ma===20?c.ma20Val:ma===50?c.ma50Val:c.ma200Val;if(c.macdVal==null||mv==null||c.histStdDev===0)return null;return(c.macdVal-mv)/c.histStdDev; }
+
+// Returns % distance of price from MA (for display)
+function macdDist(t,ma){
+  const c=techCache[t]; if(!c) return null;
+  const mv=ma===20?c.ma20Val:ma===50?c.ma50Val:c.ma200Val;
+  if(c.lastClose==null||mv==null) return null;
+  return(c.lastClose-mv)/mv*100; // % above/below MA
+}
+const fmacd=v=>v==null?'—':(v>=0?'+':'')+v.toFixed(2)+'%'; // format as %
 
 // RSI signal (momentum × zone)
 function evalRsi(t){
@@ -999,7 +1072,7 @@ function renderGrid(){
   html+=`<div class="col-hdr">P/E<span class="sub">ratio</span><span class="col-tip">?<span class="tip-box">Price-to-Earnings ratio = Stock Price ÷ Earnings Per Share (trailing 12 months). &lt;15 = value (green), 15–50 = normal, &gt;50 = expensive (amber). ETFs/crypto show — as they have no earnings.</span></span></div>`;
   html+=`<div class="col-hdr">PEG<span class="sub">growth adj</span><span class="col-tip">?<span class="tip-box">PEG Ratio = P/E ÷ Earnings Growth Rate. Adjusts P/E for growth. &lt;1 = undervalued relative to growth (green), 1–2 = fairly valued, 2–3 = expensive (amber), &gt;3 = high (red).</span></span></div>`;
   html+=`<div class="col-hdr">Op Margin<span class="sub">net %</span><span class="col-tip">?<span class="tip-box">Net Operating Margin = Operating Income ÷ Revenue × 100. Measures how much profit a company makes per £1 of revenue after operating costs. &gt;30% = high (dark green), 15–30% = good, 5–15% = acceptable, 0–5% = thin (amber), ≤0% = losing money (red).</span></span></div>`;
-  html+=`<div class="col-hdr" style="grid-column:span 3">(12,26,9)<span class="sub">σ distance from MA · crossover direction</span><span class="col-tip">?<span class="tip-box">MACD = EMA(12) − EMA(26). Signal line = EMA(9) of MACD. Histogram = MACD − Signal. Signal = distance of MACD from the selected Moving Average (MA20/50/200) measured in standard deviations of the histogram (σ). Bright = &gt;2σ + crossover, Normal = 1–2σ, Light = 0.5–1σ, Grey = &lt;0.5σ.</span></span></div>`;
+  html+=`<div class="col-hdr" style="grid-column:span 3">(12,26,9)<span class="sub">price % above/below MA · MACD momentum · crossovers</span><span class="col-tip">?<span class="tip-box">Signal = where PRICE sits relative to the Moving Average. Bright green = price &gt;5% above MA with MACD confirming bullish. Green = price above MA. Light green = slightly above. Reversed for reds. ⚡ Golden Cross = MA20/50 crossed above MA200 in last 14 days. ⚡ Death Cross = crossed below. Value shown = % price above/below the MA.</span></span></div>`;
   html+=`<div class="col-hdr">RSI (14)<span class="sub">momentum · zone</span><span class="col-tip">?<span class="tip-box">Relative Strength Index over 14 periods using Wilder's smoothing. Measures speed and magnitude of recent price changes. Signal combines zone (RSI level) and momentum (change over 3 days). Bright green = fast rise (&gt;${CFG.rsi?.fast||5}pts/3d), Green = moderate rise, Light green = slow rise. Reversed for reds. Flat (±${CFG.rsi?.slow||1}pt) = Grey.</span></span></div>`;
   html+=`<div class="col-hdr">Bollinger (20,2)<span class="sub">%B · bandwidth</span><span class="col-tip">?<span class="tip-box">Bollinger Bands: Middle = SMA(20), Upper/Lower = SMA ± 2 standard deviations. %B = (Price − Lower) ÷ (Upper − Lower). %B &gt;1 = above upper band (bright green), &gt;0.8 = near upper, &lt;0 = below lower band (bright red). Bandwidth vs 20-bar mean shows Squeeze (contraction) or Expanding (breakout).</span></span></div>`;
   html+=`<div class="col-hdr">ATR (14)<span class="sub">vol regime</span><span class="col-tip">?<span class="tip-box">Average True Range over 14 periods. True Range = max(High−Low, |High−PrevClose|, |Low−PrevClose|). Compared to its own 20-day mean. Rising ATR = increasing volatility (reds — caution). Falling ATR = calming market (greens — lower risk). Ratio vs mean shown (e.g. 1.8×).</span></span></div>`;
@@ -1013,9 +1086,9 @@ function renderGrid(){
   html+=`<div class="col-sub">trailing</div>`;
   html+=`<div class="col-sub">P/E ÷ growth</div>`;
   html+=`<div class="col-sub">oper. margin</div>`;
-  html+=`<div class="col-sub">MA200</div>`;
-  html+=`<div class="col-sub">MA50</div>`;
-  html+=`<div class="col-sub">MA20</div>`;
+  html+=`<div class="col-sub">% vs MA200</div>`;
+  html+=`<div class="col-sub">% vs MA50</div>`;
+  html+=`<div class="col-sub">% vs MA20</div>`;
   html+=`<div class="col-sub">RSI + 3d mom</div>`;
   html+=`<div class="col-sub">%B + squeeze</div>`;
   html+=`<div class="col-sub">ATR vs mean</div>`;
@@ -1078,14 +1151,19 @@ function renderGrid(){
     [200,50,20].forEach(ma=>{
       const ind=`macd${ma}`, sig=sigs[ind], col=SIG[sig]||SIG.none;
       const dist=macdDist(t,ma);
-      const cross=c?.macdCrossover==='bullish'?'↑ bull':c?.macdCrossover==='bearish'?'↓ bear':'';
       const fl=isFlash(t,ind);
-      const valStr=sig==='loading'?'<span class="spinner"></span>':dist!=null?fsd(dist):'—';
+      // Show Golden/Death Cross label if applicable, else MACD direction
+      const crossLabel=ma===200&&(c?.ma20CrossedMa200||c?.ma50CrossedMa200)?
+        (c.ma20CrossedMa200==='bullish'||c.ma50CrossedMa200==='bullish'?'⚡ Golden X':'⚡ Death X'):
+        ma===50&&c?.ma20CrossedMa50?
+        (c.ma20CrossedMa50==='bullish'?'⚡ MA20↑50':'⚡ MA20↓50'):
+        (c?.macdCrossover==='bullish'?'↑ MACD bull':c?.macdCrossover==='bearish'?'↓ MACD bear':'');
+      const valStr=sig==='loading'?'<span class="spinner"></span>':dist!=null?fmacd(dist):'—';
       html+=`<div class="ind-cell cell-sig" style="position:relative" onclick="openModal('${t}')">
         ${fl?`<span class="sig-flash" style="position:absolute;top:3px;right:4px;font-size:10px">⚡</span>`:''}
         <div class="sig-pill" style="background:${col.bg}">
           <span class="sig-label" style="color:${col.tx}">${col.lb}</span>
-          <span class="sig-val" style="color:${col.tx}">${valStr}${cross?`<br>${cross}`:''}</span>
+          <span class="sig-val" style="color:${col.tx}">${valStr}${crossLabel?`<br>${crossLabel}`:''}</span>
         </div>
       </div>`;
     });
@@ -1197,7 +1275,7 @@ function openModal(t){
 
   const macdRows=[200,50,20].map(ma=>{
     const sig=evalMacd(t,ma), col=SIG[sig]||SIG.none, dist=macdDist(t,ma), fl=isFlash(t,`macd${ma}`);
-    return`<div class="modal-row"><span class="modal-label">MACD vs MA${ma}</span><span>${dist!=null?fsd(dist):'—'} <span class="sbadge" style="background:${col.bg};color:${col.tx}">${col.lb}${fl?' ⚡':''}</span></span></div>`;
+    return`<div class="modal-row"><span class="modal-label">MACD vs MA${ma}</span><span>${dist!=null?fmacd(dist):'—'} <span class="sbadge" style="background:${col.bg};color:${col.tx}">${col.lb}${fl?' ⚡':''}</span></span></div>`;
   }).join('');
 
   const allIndRows=[
