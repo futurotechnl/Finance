@@ -392,10 +392,12 @@ const ls = { get:k=>{try{return JSON.parse(localStorage.getItem(SK+k))}catch(e){
 const DEFAULT_FH = 'd82aagpr01qmgc0fa27gd82aagpr01qmgc0fa280';
 const DEFAULT_PG = '4htHRoDxArf8ATG_GhhcXLKVnliC4Htr';
 const DEFAULT_TICKERS = ['QCOM','BTC-USD','ETH-USD','0700.HK','BRK-B','TCEHY','AI','BABA','9988.HK','1810.HK','XIACY','RHM.DE','FINMY','HO.PA','BAESY','OKLO','ATO.PA','REK','TLT','SRTY','NTES','TME','9899.HK','QQQ','IQ','GLD','SMR','BMNR','BIDU','GOOGL','GDXU','XHB','MSFT','AAPL','NVDA','TSLA'];
-const NON_US = new Set(['BTC-USD','ETH-USD','0700.HK','9988.HK','1810.HK','9899.HK','RHM.DE','HO.PA','ATO.PA','TCEHY','XIACY','FINMY','BAESY','BIDU','NTES','TME','IQ']);
+const NON_US = new Set(['BTC-USD','ETH-USD','0700.HK','9988.HK','1810.HK','9899.HK','RHM.DE','HO.PA','ATO.PA']);
+// ADRs (TCEHY, BIDU etc.) are US-listed so isUS=true — Finnhub will fail but Yahoo will succeed
+const ADR_SET = new Set(['TCEHY','XIACY','FINMY','BAESY','BIDU','NTES','TME','IQ']);
 const isUS = t => !NON_US.has(t) && !t.endsWith('.HK') && !t.endsWith('.DE') && !t.endsWith('.PA');
 const TYPE_MAP = {'BTC-USD':'Crypto','ETH-USD':'Crypto','QQQ':'ETF','GLD':'ETF','TLT':'ETF','XHB':'ETF','GDXU':'ETF','SRTY':'ETF','REK':'ETF','0700.HK':'HK','9988.HK':'HK','1810.HK':'HK','9899.HK':'HK','RHM.DE':'DE','HO.PA':'FR','ATO.PA':'FR'};
-const gtype = t => TYPE_MAP[t]||(t.endsWith('.HK')?'HK':t.endsWith('.DE')?'DE':t.endsWith('.PA')?'FR':'Stock');
+const gtype = t => TYPE_MAP[t]||(t.endsWith('.HK')?'HK':t.endsWith('.DE')?'DE':t.endsWith('.PA')?'FR':ADR_SET.has(t)?'ADR':'Stock');
 
 const SIG = {
   'bright-green':{bg:'#00c853',tx:'#003300',lb:'Bright green'},
@@ -648,21 +650,23 @@ async function fetchOHLC(sym){
   const to=now-86400;
   const from=now-(365*86400);
 
-  // Source 1: Finnhub candles (same API as live quotes, full CORS)
-  try{
-    const url=`https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(sym)}&resolution=D&from=${from}&to=${to}&token=${CFG.fhKey}`;
-    const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
-    if(r.ok){
-      const d=await r.json();
-      if(d.s==='ok'&&d.c?.length>=30){
-        const bars=d.t.map((t,i)=>({t:t*1000,o:d.o[i],h:d.h[i],l:d.l[i],c:d.c[i],v:d.v?.[i]||0})).filter(b=>b.c>0);
-        if(bars.length>=30){console.log(`✓ Finnhub ${sym}: ${bars.length} bars`);return bars;}
+  // ADRs: Finnhub blocks them — go straight to Yahoo Finance
+  if(!ADR_SET.has(sym)){
+    try{
+      const url=`https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(sym)}&resolution=D&from=${from}&to=${to}&token=${CFG.fhKey}`;
+      const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
+      if(r.ok){
+        const d=await r.json();
+        if(d.s==='ok'&&d.c?.length>=30){
+          const bars=d.t.map((t,i)=>({t:t*1000,o:d.o[i],h:d.h[i],l:d.l[i],c:d.c[i],v:d.v?.[i]||0})).filter(b=>b.c>0);
+          if(bars.length>=30){console.log(`✓ Finnhub ${sym}: ${bars.length} bars`);return bars;}
+        }
+        console.warn(`Finnhub ${sym}: status=${d.s} bars=${d.c?.length||0} — trying Yahoo`);
       }
-      console.warn(`Finnhub ${sym}: status=${d.s} bars=${d.c?.length||0}`);
-    }
-  }catch(e){console.warn(`Finnhub candle ${sym}:`,e.message);}
+    }catch(e){console.warn(`Finnhub candle ${sym}:`,e.message);}
+  }
 
-  // Source 2: Yahoo Finance with crumb authentication
+  // Yahoo Finance fallback (works for ADRs + any Finnhub failures)
   const yahooBars=await fetchYahooChart(sym);
   if(yahooBars) return yahooBars;
 
