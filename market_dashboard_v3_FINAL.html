@@ -857,11 +857,14 @@ function clearCacheRun(){ techCache={}; ls.set('tech',{}); loadIndicatorsFromSup
 
 // ── Price vs MA signal + MACD momentum confirmation + Golden/Death Cross flash ──
 // Signal = where PRICE sits relative to the moving average
-// Bright green = price well above MA AND MACD confirms bullish momentum
-// Golden/Death Cross (MA20/50 crossing MA200) = instant bright signal
+// Uses live quote price (liveQ) or static SCR price — does NOT rely on lastClose in cache
+function getPrice(t){
+  return liveQ[t]?.price ?? techCache[t]?.lastClose ?? SCR.find(s=>s.ticker===t)?.price ?? null;
+}
+
 function evalMacd(t, maLevel){
   const c=techCache[t]; if(!c) return isUS(t)?'loading':'none';
-  const price=c.lastClose;
+  const price=getPrice(t);
   const maVal=maLevel===20?c.ma20Val:maLevel===50?c.ma50Val:c.ma200Val;
   if(price==null||maVal==null) return 'grey';
 
@@ -885,25 +888,26 @@ function evalMacd(t, maLevel){
   }
 
   // Price vs MA signal levels
-  if(pct>=5  &&macdBull) return'bright-green'; // strongly above + bullish MACD
-  if(pct>=5)             return'green';          // strongly above
-  if(pct>=2  &&macdBull) return'green';          // above + MACD confirms
-  if(pct>=0.5)           return'light-green';    // slightly above
+  if(pct>=5  &&macdBull) return'bright-green';
+  if(pct>=5)             return'green';
+  if(pct>=2  &&macdBull) return'green';
+  if(pct>=0.5)           return'light-green';
   if(pct<=-5 &&macdBear) return'bright-red';
   if(pct<=-5)            return'red';
   if(pct<=-2 &&macdBear) return'red';
   if(pct<=-0.5)          return'light-red';
-  return'grey'; // within 0.5% — essentially at the MA
+  return'grey';
 }
 
 // Returns % distance of price from MA (for display)
 function macdDist(t,ma){
-  const c=techCache[t]; if(!c) return null;
+  const price=getPrice(t);
+  const c=techCache[t]; if(!c||price==null) return null;
   const mv=ma===20?c.ma20Val:ma===50?c.ma50Val:c.ma200Val;
-  if(c.lastClose==null||mv==null) return null;
-  return(c.lastClose-mv)/mv*100; // % above/below MA
+  if(mv==null) return null;
+  return(price-mv)/mv*100;
 }
-const fmacd=v=>v==null?'—':(v>=0?'+':'')+v.toFixed(2)+'%'; // format as %
+const fmacd=v=>v==null?'—':(v>=0?'+':'')+v.toFixed(2)+'%';
 
 // RSI signal (momentum × zone)
 function evalRsi(t){
